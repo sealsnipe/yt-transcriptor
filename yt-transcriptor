@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""yt-transcriptor – fetch, clean, summarize and archive YouTube transcripts."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+VENV_SITE = PROJECT_ROOT / ".venv" / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+if VENV_SITE.is_dir():
+    sys.path.insert(0, str(VENV_SITE))
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from lib.pipeline import process_video
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="yt-transcriptor")
+    parser.add_argument("url", help="YouTube URL or 11-character video ID")
+    parser.add_argument(
+        "--topic",
+        "-T",
+        default=None,
+        help="Topic folder under transcripts/ (default: auto-detect)",
+    )
+    parser.add_argument(
+        "--language",
+        "-l",
+        default="de,en",
+        help="Comma-separated language fallback list (default: de,en)",
+    )
+    parser.add_argument(
+        "--transcripts-dir",
+        default="transcripts",
+        help="Output root relative to project folder (default: transcripts)",
+    )
+    parser.add_argument(
+        "--text-only",
+        action="store_true",
+        help="Print cleaned transcript to stdout",
+    )
+    parser.add_argument(
+        "--no-save",
+        action="store_true",
+        help="Do not write files",
+    )
+    args = parser.parse_args()
+    languages = [x.strip() for x in args.language.split(",") if x.strip()]
+
+    try:
+        result = process_video(
+            args.url,
+            topic=args.topic,
+            languages=languages,
+            transcripts_path=args.transcripts_dir,
+            save=not args.no_save,
+        )
+    except Exception as exc:
+        error_msg = str(exc)
+        if "disabled" in error_msg.lower():
+            payload = {"ok": False, "error": "Transcripts are disabled for this video."}
+        elif "no transcript" in error_msg.lower():
+            payload = {"ok": False, "error": "No transcript found. Try --language de,en."}
+        else:
+            payload = {"ok": False, "error": error_msg}
+        print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
+        sys.exit(1)
+
+    if args.text_only:
+        print(result.clean_text)
+        return
+
+    print(json.dumps(result.stdout_payload(), ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()
