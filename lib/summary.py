@@ -5,11 +5,12 @@ import os
 import re
 import subprocess
 from collections import Counter
+from pathlib import Path
 from typing import Any
 
-# LLM bridge into the stockstuff OAuth-preset backend (one canonical token store;
-# see stockstuff/scripts/llm-ask.js). Heuristic summary remains the offline fallback.
-LLM_BRIDGE = "/home/ma-agent1/projects/stockstuff/scripts/llm-ask.js"
+# LLM bridge (tools/llm-ask.js) into the stockstuff OAuth-preset backend (one
+# canonical token store). Heuristic summary remains the offline fallback.
+LLM_BRIDGE = str(Path(__file__).resolve().parent.parent / "tools" / "llm-ask.js")
 LLM_SYSTEM = (
     "Du fasst YouTube-Transkripte zusammen. Antworte NUR mit einem JSON-Objekt, "
     "ohne Markdown-Zaun: {\"brief\": \"2-3 Saetze Kernaussage\", "
