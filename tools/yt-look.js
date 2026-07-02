@@ -99,10 +99,18 @@ function download(id, dir) {
 function cutClip(src, dir, start, end) {
   const dest = path.join(dir, `clip_${Math.round(start)}-${Math.round(end)}.mp4`);
   if (fs.existsSync(dest) && fs.statSync(dest).size > 0) return dest;
-  // -c copy snaps to the previous keyframe (<=~5s early) — padding already covers that
-  execFileSync(FFMPEG, ['-y', '-ss', String(start), '-to', String(end), '-i', src,
-    '-c', 'copy', '-avoid_negative_ts', 'make_zero', dest], { stdio: 'pipe', timeout: 120000 });
-  if (!fs.existsSync(dest) || fs.statSync(dest).size === 0) throw new Error('ffmpeg produced an empty clip');
+  // write to a temp name, rename on success — a killed ffmpeg must not leave a
+  // truncated clip behind that the size>0 cache check would reuse forever
+  const tmp = path.join(dir, `.clip_tmp_${process.pid}.mp4`);
+  try {
+    // -c copy snaps to the previous keyframe (<=~5s early) — padding already covers that
+    execFileSync(FFMPEG, ['-y', '-ss', String(start), '-to', String(end), '-i', src,
+      '-c', 'copy', '-avoid_negative_ts', 'make_zero', tmp], { stdio: 'pipe', timeout: 120000 });
+    if (!fs.existsSync(tmp) || fs.statSync(tmp).size === 0) throw new Error('ffmpeg produced an empty clip');
+    fs.renameSync(tmp, dest);
+  } finally {
+    try { fs.unlinkSync(tmp); } catch { /* already renamed */ }
+  }
   return dest;
 }
 
@@ -199,6 +207,20 @@ const SYSTEM = `You are a precise video analyst. Answer ONLY from what you can a
 
   const id = videoId(args.url);
   const cacheDir = path.join(args.cacheDir || CACHE_ROOT, id);
+
+  // validate media selection BEFORE any download/API work — an empty frame list
+  // would silently send a text-only request and archive a blind "video" verdict
+  let frameTimes = [];
+  if (args.frames) {
+    const requested = args.frames.split(',').map((t) => t.trim()).filter(Boolean);
+    if (!requested.length) { console.error(`--frames needs at least one timestamp, got: "${args.frames}"`); usage(1); }
+    requested.forEach(parseTime); // throws on malformed timestamps
+    if (requested.length > MAX_FRAMES) {
+      console.error(`[yt-look] WARNING: ${requested.length} frames requested, sending only the first ${MAX_FRAMES}`);
+    }
+    frameTimes = requested.slice(0, MAX_FRAMES);
+  }
+
   const preset = backend.rolePreset(ROLE);
 
   console.error(`[yt-look] ${id} via ${preset.provider}/${preset.model} (${args.range ? 'clip ' + args.range : args.frames ? 'frames ' + args.frames : 'full video'})`);
@@ -213,7 +235,7 @@ const SYSTEM = `You are a precise video analyst. Answer ONLY from what you can a
 
   if (args.frames) {
     mode = 'frames';
-    const times = args.frames.split(',').map((t) => t.trim()).filter(Boolean).slice(0, MAX_FRAMES);
+    const times = frameTimes;
     detail = times.join(',');
     const labels = [];
     for (const t of times) {

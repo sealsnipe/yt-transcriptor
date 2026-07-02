@@ -51,12 +51,15 @@ def format_timestamp(seconds: float) -> str:
 
 def fetch_transcript(
     video_id: str, languages: list[str] | None = None
-) -> list[TranscriptSegment]:
+) -> tuple[list[TranscriptSegment], str | None]:
+    """Returns (segments, language_code) — the code is the track's ACTUAL language,
+    needed so the json3 fallback doesn't pick an auto-translated track instead."""
     api = YouTubeTranscriptApi()
     if languages:
         result = api.fetch(video_id, languages=languages)
     else:
         result = api.fetch(video_id)
+    language_code = getattr(result, "language_code", None)
 
     segments: list[TranscriptSegment] = []
     for seg in result:
@@ -72,19 +75,28 @@ def fetch_transcript(
                     duration=seg.get("duration", 0),
                 )
             )
-    return segments
+    return segments, language_code
 
 
 def fetch_subtitle_segments(
-    video_id: str, languages: list[str] | None = None
+    video_id: str,
+    languages: list[str] | None = None,
+    prefer_language: str | None = None,
 ) -> list[TranscriptSegment]:
     """Fallback timestamp source: YouTube (auto-)subtitles via yt-dlp json3.
 
     The transcript API sometimes returns the whole video as one segment, which
     makes transcript_timestamped.txt useless for pointing a video-QA model at a
     time range. json3 subtitles always carry per-cue timestamps.
+
+    prefer_language MUST be the video's original language when known: yt-dlp
+    also downloads auto-TRANSLATED tracks (e.g. sub.de.json3 for an English
+    video), and preferring the caller's UI language would silently replace the
+    original transcript with a machine translation.
     """
     langs = languages or ["de", "en"]
+    if prefer_language:
+        langs = [prefer_language] + [l for l in langs if l != prefer_language]
     with tempfile.TemporaryDirectory() as tmp:
         cmd = [
             sys.executable, "-m", "yt_dlp", "--skip-download", "--no-warnings",

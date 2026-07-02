@@ -64,12 +64,15 @@ def process_video(
 ) -> ProcessResult:
     video_id = extract_video_id(url_or_id)
     meta = fetch_video_meta(video_id)
-    segments = fetch_transcript(video_id, languages)
+    segments, transcript_language = fetch_transcript(video_id, languages)
 
     # Some videos come back as one giant segment — useless for pointing a
     # video-QA model at a time range. Re-fetch per-cue timestamps via subtitles.
+    # prefer_language pins the fallback to the track's ORIGINAL language so an
+    # auto-translated subtitle track can't silently replace the transcript.
     if len(segments) <= 2 and meta.duration_seconds >= 180:
-        fallback = fetch_subtitle_segments(video_id, languages)
+        base_lang = transcript_language.split("-")[0] if transcript_language else None
+        fallback = fetch_subtitle_segments(video_id, languages, prefer_language=base_lang)
         if len(fallback) > len(segments) * 3:
             segments = fallback
 
