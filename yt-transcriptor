@@ -47,6 +47,11 @@ def main() -> None:
         action="store_true",
         help="Do not write files",
     )
+    parser.add_argument(
+        "--no-llm",
+        action="store_true",
+        help="Skip the LLM summary (heuristic only; also via YT_NO_LLM=1)",
+    )
     args = parser.parse_args()
     languages = [x.strip() for x in args.language.split(",") if x.strip()]
 
@@ -57,6 +62,7 @@ def main() -> None:
             languages=languages,
             transcripts_path=args.transcripts_dir,
             save=not args.no_save,
+            use_llm=not args.no_llm,
         )
     except Exception as exc:
         error_msg = str(exc)

@@ -127,6 +127,13 @@ def _strip_promotional_content(text: str) -> tuple[str, list[str]]:
     return text, removed
 
 
+# Auto-captions carry no sentence punctuation, so a punctuation-only split merges
+# the whole video into one line; force a flush so timestamped lines stay usable
+# for pointing a video-QA model at a time range.
+_MAX_MERGED_CHARS = 400
+_MAX_SILENCE_GAP = 4.0
+
+
 def _merge_segments(segments: list[TranscriptSegment]) -> list[TranscriptSegment]:
     if not segments:
         return []
@@ -144,12 +151,15 @@ def _merge_segments(segments: list[TranscriptSegment]) -> list[TranscriptSegment
             continue
 
         prev = current.text.rstrip()
-        if prev and prev[-1] in ".!?":
+        gap = seg.start - (current.start + current.duration)
+        if prev and (prev[-1] in ".!?" or len(prev) >= _MAX_MERGED_CHARS or gap > _MAX_SILENCE_GAP):
             merged.append(current)
             current = TranscriptSegment(text=piece, start=seg.start, duration=seg.duration)
             continue
 
-        joiner = "" if prev.endswith("-") or piece[:1].islower() else " "
+        # caption cues are word-aligned: always join with a space (gluing produced
+        # artifacts like "andmade"); only a trailing hyphen continues a word
+        joiner = "" if prev.endswith("-") else " "
         current = TranscriptSegment(
             text=f"{prev}{joiner}{piece}",
             start=current.start,

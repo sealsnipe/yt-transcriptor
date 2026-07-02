@@ -1,8 +1,22 @@
 from __future__ import annotations
 
+import json
+import os
 import re
+import subprocess
 from collections import Counter
 from typing import Any
+
+# LLM bridge into the stockstuff OAuth-preset backend (one canonical token store;
+# see stockstuff/scripts/llm-ask.js). Heuristic summary remains the offline fallback.
+LLM_BRIDGE = "/home/ma-agent1/projects/stockstuff/scripts/llm-ask.js"
+LLM_SYSTEM = (
+    "Du fasst YouTube-Transkripte zusammen. Antworte NUR mit einem JSON-Objekt, "
+    "ohne Markdown-Zaun: {\"brief\": \"2-3 Saetze Kernaussage\", "
+    "\"key_points\": [\"5-10 konkrete Punkte mit Zahlen/Namen/Fakten aus dem Video\"], "
+    "\"topics\": [\"2-5 Schlagworte\"]}. Schreibe auf Deutsch, behalte Fachbegriffe "
+    "und woertliche Zitate im Original. Erfinde nichts, was nicht im Transkript steht."
+)
 
 
 STOPWORDS = {
@@ -195,15 +209,48 @@ def _select_key_points(
     return [text for _, text in chosen]
 
 
+def _llm_summary(text: str, title: str, channel: str) -> dict[str, Any]:
+    """Summary via the LLM-preset bridge ('extraction' role). Raises on any problem."""
+    user = f"Titel: {title}\nKanal: {channel}\n\nTranskript:\n{_sample_text(text, 40000)}"
+    proc = subprocess.run(
+        ["node", LLM_BRIDGE, "--role", "extraction", "--system", LLM_SYSTEM],
+        input=user, capture_output=True, text=True, timeout=240,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"llm bridge failed: {proc.stderr.strip()[:200]}")
+    match = re.search(r"\{.*\}", proc.stdout, re.S)
+    if not match:
+        raise ValueError("no JSON in llm output")
+    data = json.loads(match.group(0))
+    brief = str(data.get("brief", "")).strip()
+    key_points = [str(p).strip() for p in data.get("key_points", []) if str(p).strip()]
+    topics = [str(t).strip() for t in data.get("topics", []) if str(t).strip()]
+    if not brief or not key_points:
+        raise ValueError("llm summary incomplete")
+    return {"brief": brief, "key_points": key_points[:10], "topics": topics[:5]}
+
+
 def build_agent_summary(
     text: str,
     title: str,
     channel: str,
     duration_seconds: int = 0,
+    use_llm: bool = True,
 ) -> dict[str, Any]:
-    brief = _compose_brief(text, title)
-    key_points = _select_key_points(text, duration_seconds=duration_seconds)
-    topics = _infer_topic_labels(text)
+    llm: dict[str, Any] | None = None
+    if use_llm and not os.environ.get("YT_NO_LLM") and text.strip():
+        try:
+            llm = _llm_summary(text, title, channel)
+        except Exception:
+            llm = None  # fail open: the heuristic below always produces something
+
+    if llm:
+        brief, key_points, topics = llm["brief"], llm["key_points"], llm["topics"]
+    else:
+        brief = _compose_brief(text, title)
+        key_points = _select_key_points(text, duration_seconds=duration_seconds)
+        topics = _infer_topic_labels(text)
+
     return {
         "title": title,
         "channel": channel,
@@ -213,6 +260,7 @@ def build_agent_summary(
         "language_hint": _detect_language_hint(text),
         "is_long_form": duration_seconds >= 1800,
         "duration_seconds": duration_seconds,
+        "summary_source": "llm" if llm else "heuristic",
     }
 
 

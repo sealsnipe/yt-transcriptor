@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from lib.chunks import TranscriptChunk
-from lib.fetcher import VideoMeta, format_timestamp
+from lib.fetcher import TranscriptSegment, VideoMeta, format_timestamp
 from lib.paths import PROJECT_ROOT, resolve_transcripts_dir
 from lib.summary import render_agent_md
 
@@ -49,6 +49,7 @@ def save_agent_bundle(
     removed_blocks: list[str],
     language: str | None,
     transcripts_path: str | None = None,
+    segments: list[TranscriptSegment] | None = None,
 ) -> Path:
     root = resolve_transcripts_dir(transcripts_path)
     out_dir = build_output_dir(root, topic, meta)
@@ -75,6 +76,8 @@ def save_agent_bundle(
     }
     if chunk_paths:
         paths["chunks"] = "chunks/"
+    if segments:
+        paths["segments"] = "segments.json"
 
     agent_payload = {
         "tool": "yt-transcriptor",
@@ -85,6 +88,7 @@ def save_agent_bundle(
         "duration_human": format_timestamp(meta.duration_seconds),
         "transcript_chars": len(clean_text),
         "removed_blocks_count": len(removed_blocks),
+        "segment_count": len(segments) if segments else 0,
         "summary": summary,
         "chunks": chunk_paths,
         "paths": paths,
@@ -98,6 +102,17 @@ def save_agent_bundle(
     (out_dir / "agent.md").write_text(render_agent_md(summary, paths), encoding="utf-8")
     (out_dir / "transcript.txt").write_text(clean_text + "\n", encoding="utf-8")
     (out_dir / "transcript_timestamped.txt").write_text(timestamped_text + "\n", encoding="utf-8")
+
+    if segments:
+        # raw per-cue timestamps, machine-readable — the pointing source for video-QA
+        (out_dir / "segments.json").write_text(
+            json.dumps(
+                [{"start": round(s.start, 2), "duration": round(s.duration, 2), "text": s.text} for s in segments],
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
 
     if removed_blocks:
         (out_dir / "removed_noise.txt").write_text(

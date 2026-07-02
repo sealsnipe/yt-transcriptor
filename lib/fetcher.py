@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 
 from youtube_transcript_api import YouTubeTranscriptApi
 
@@ -69,6 +72,56 @@ def fetch_transcript(
                     duration=seg.get("duration", 0),
                 )
             )
+    return segments
+
+
+def fetch_subtitle_segments(
+    video_id: str, languages: list[str] | None = None
+) -> list[TranscriptSegment]:
+    """Fallback timestamp source: YouTube (auto-)subtitles via yt-dlp json3.
+
+    The transcript API sometimes returns the whole video as one segment, which
+    makes transcript_timestamped.txt useless for pointing a video-QA model at a
+    time range. json3 subtitles always carry per-cue timestamps.
+    """
+    langs = languages or ["de", "en"]
+    with tempfile.TemporaryDirectory() as tmp:
+        cmd = [
+            sys.executable, "-m", "yt_dlp", "--skip-download", "--no-warnings",
+            "--write-subs", "--write-auto-subs", "--sub-langs", ",".join(langs),
+            "--sub-format", "json3", "-o", f"{tmp}/sub",
+            f"https://www.youtube.com/watch?v={video_id}",
+        ]
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=120, check=False)
+        except subprocess.TimeoutExpired:
+            return []
+        files = list(Path(tmp).glob("sub.*.json3"))
+        if not files:
+            return []
+        # prefer the caller's language order, else take what we got
+        chosen = next(
+            (f for lang in langs for f in files if f.name.startswith(f"sub.{lang}")),
+            files[0],
+        )
+        try:
+            data = json.loads(chosen.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return []
+
+    segments: list[TranscriptSegment] = []
+    for ev in data.get("events", []):
+        text = "".join(s.get("utf8", "") for s in ev.get("segs") or [])
+        text = text.replace("\n", " ").strip()
+        if not text:
+            continue
+        segments.append(
+            TranscriptSegment(
+                text=text,
+                start=ev.get("tStartMs", 0) / 1000.0,
+                duration=ev.get("dDurationMs", 0) / 1000.0,
+            )
+        )
     return segments
 
 
