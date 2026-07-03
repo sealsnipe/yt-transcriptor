@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -97,6 +98,12 @@ def fetch_subtitle_segments(
     langs = languages or ["de", "en"]
     if prefer_language:
         langs = [prefer_language] + [l for l in langs if l != prefer_language]
+    if _ytfetch_enabled():
+        result = _ytfetch_subs(video_id, langs, prefer_language)
+        if result is not None:
+            # a decisive answer (segments, or [] for a clean notfound). Only a
+            # transient ytfetch failure (None) falls through to direct yt-dlp.
+            return result
     with tempfile.TemporaryDirectory() as tmp:
         cmd = [
             sys.executable, "-m", "yt_dlp", "--skip-download", "--no-warnings",
@@ -121,6 +128,12 @@ def fetch_subtitle_segments(
         except (json.JSONDecodeError, OSError):
             return []
 
+    return _parse_json3(data)
+
+
+def _parse_json3(data: dict) -> list[TranscriptSegment]:
+    """Parse a YouTube json3 subtitle document into timed segments. Shared by the
+    direct yt-dlp path and the ytfetch path so both produce identical output."""
     segments: list[TranscriptSegment] = []
     for ev in data.get("events", []):
         text = "".join(s.get("utf8", "") for s in ev.get("segs") or [])
@@ -137,8 +150,90 @@ def fetch_subtitle_segments(
     return segments
 
 
+def _ytfetch_subs(
+    video_id: str, langs: list[str], prefer_language: str | None
+) -> list[TranscriptSegment] | None:
+    """Fetch json3 subtitles via the shared ytfetch CLI (yt-video-engine).
+
+    Returns parsed segments, [] on a decisive notfound (no acceptable
+    original-language track — ytfetch refuses to hand back a machine-translated
+    one), or None to signal a transient failure so the caller falls back to the
+    direct yt-dlp path. Gated behind USE_YTFETCH.
+    """
+    prefer = prefer_language or (langs[0] if langs else "en")
+    try:
+        proc = subprocess.run(
+            ["ytfetch", "subs", video_id, "--langs", ",".join(langs),
+             "--prefer", prefer, "--format", "json3"],
+            capture_output=True, text=True, timeout=120, env=_ytfetch_env(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode == 4:  # notfound: no acceptable original-language subtitles
+        return []
+    if proc.returncode != 0:  # auth/ratelimit/unknown -> let the caller fall back
+        return None
+    try:
+        payload = json.loads(proc.stdout)
+        data = json.loads(Path(payload["path"]).read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, KeyError):
+        return None
+    return _parse_json3(data)
+
+
+_YTFETCH_OFF = {"0", "false", "off", "no"}
+
+
+def _ytfetch_enabled() -> bool:
+    """ytfetch (yt-video-engine) is the default fetch path; set USE_YTFETCH=0
+    (or false/off/no) to force the legacy direct-yt-dlp path. Any ytfetch failure
+    still degrades to direct yt-dlp regardless, so this is just an escape hatch."""
+    return os.environ.get("USE_YTFETCH", "1").strip().lower() not in _YTFETCH_OFF
+
+
+def _ytfetch_env() -> dict:
+    """Env for the ytfetch subprocess: default to the production 'native' backend
+    (auth pool + size-aware cache + player_client ladder) unless overridden."""
+    env = dict(os.environ)
+    env.setdefault("YTFETCH_BACKEND", "native")
+    return env
+
+
+def _ytfetch_meta(video_id: str) -> dict | None:
+    """Fetch title/channel/duration via the shared ytfetch CLI (yt-video-engine).
+
+    Returns a dict of VideoMeta kwargs, or None to signal the caller to fall back
+    to the direct yt-dlp path: any failure (missing binary, non-zero exit, bad
+    JSON) degrades to yt-dlp.
+    """
+    try:
+        proc = subprocess.run(
+            ["ytfetch", "meta", video_id, "--fields", "title,channel,duration"],
+            capture_output=True, text=True, timeout=60, env=_ytfetch_env(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+    # ytfetch normalises missing values to JSON null; duration arrives as a number.
+    return {
+        "title": data.get("title") or video_id,
+        "channel": data.get("channel") or "unknown",
+        "duration_seconds": int(data.get("duration") or 0),
+    }
+
+
 def fetch_video_meta(video_id: str) -> VideoMeta:
     url = f"https://www.youtube.com/watch?v={video_id}"
+    if _ytfetch_enabled():
+        meta = _ytfetch_meta(video_id)
+        if meta is not None:
+            return VideoMeta(video_id=video_id, url=url, **meta)
+        # fall through to direct yt-dlp on any ytfetch failure
     cmd = [
         sys.executable,
         "-m",

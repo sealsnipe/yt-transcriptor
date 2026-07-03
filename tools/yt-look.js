@@ -31,6 +31,7 @@ const PROJECT_ROOT = path.join(__dirname, '..');
 const CACHE_ROOT = process.env.YT_LOOK_CACHE || path.join(PROJECT_ROOT, 'videos');
 const TRANSCRIPTS_ROOT = path.join(PROJECT_ROOT, 'transcripts');
 const YT_DLP = process.env.YT_DLP_BIN || 'yt-dlp';
+const YTFETCH = process.env.YTFETCH_BIN || 'ytfetch';
 const FFMPEG = process.env.FFMPEG_BIN || 'ffmpeg';
 const FFPROBE = process.env.FFPROBE_BIN || 'ffprobe';
 const ROLE = 'video-qa';
@@ -72,9 +73,40 @@ function probeDuration(file) {
   } catch { return 0; }
 }
 
+// ytfetch is the default fetch path; set USE_YTFETCH=0 (or false/off/no) to force
+// the legacy direct-yt-dlp ladder. Any ytfetch failure degrades to it regardless.
+function ytfetchEnabled() {
+  const v = (process.env.USE_YTFETCH ?? '1').trim().toLowerCase();
+  return !['0', 'false', 'off', 'no'].includes(v);
+}
+
+// Shared byte-fetch via the ytfetch CLI (yt-video-engine). Returns the cached
+// media path, or null to signal the caller to fall back to the direct yt-dlp
+// ladder. The video+audio enum carries our avc1->vp9->any codec ladder inside
+// ytfetch, so we never get AV1 (itag399 500s) back here.
+function ytfetchVideo(id) {
+  let r;
+  try {
+    r = spawnSync(YTFETCH, ['fetch', id, '--media', 'video+audio', '--max-height', '1080'],
+      { encoding: 'utf8', timeout: 15 * 60 * 1000,
+        env: { ...process.env, YTFETCH_BACKEND: process.env.YTFETCH_BACKEND || 'native' } });
+  } catch { return null; }
+  if (r.status !== 0) return null; // auth/ratelimit/format/unknown -> fall back
+  try {
+    const out = JSON.parse(r.stdout);
+    if (out.path && fs.existsSync(out.path) && fs.statSync(out.path).size > 0) return out.path;
+  } catch { /* bad JSON -> fall back */ }
+  return null;
+}
+
 function download(id, dir) {
   const dest = path.join(dir, 'source.mp4');
   if (fs.existsSync(dest) && fs.statSync(dest).size > 0) return dest;
+  if (ytfetchEnabled()) {
+    const p = ytfetchVideo(id);
+    if (p) return p; // ytfetch owns the cache + eviction; ffmpeg reads this path directly
+    // fall through to the direct yt-dlp ladder on any ytfetch failure
+  }
   fs.mkdirSync(dir, { recursive: true });
   const url = `https://www.youtube.com/watch?v=${id}`;
   // avc1/vp9 first (AV1 itag 399 has been serving HTTP 500s); then client fallbacks
