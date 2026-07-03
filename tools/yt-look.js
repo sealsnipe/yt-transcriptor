@@ -99,6 +99,10 @@ function ytfetchVideo(id) {
 }
 
 function download(id, dir) {
+  // frames/clips are written into `dir` by the caller, so it must exist even when
+  // the media itself comes from ytfetch's cache (early return below) rather than
+  // the yt-dlp branch that used to be the only thing creating it.
+  fs.mkdirSync(dir, { recursive: true });
   const dest = path.join(dir, 'source.mp4');
   if (fs.existsSync(dest) && fs.statSync(dest).size > 0) return dest;
   if (ytfetchEnabled()) {
@@ -106,7 +110,6 @@ function download(id, dir) {
     if (p) return p; // ytfetch owns the cache + eviction; ffmpeg reads this path directly
     // fall through to the direct yt-dlp ladder on any ytfetch failure
   }
-  fs.mkdirSync(dir, { recursive: true });
   const url = `https://www.youtube.com/watch?v=${id}`;
   // avc1/vp9 first (AV1 itag 399 has been serving HTTP 500s); then client fallbacks
   const attempts = [
