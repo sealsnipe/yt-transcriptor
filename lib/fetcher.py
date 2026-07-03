@@ -165,7 +165,7 @@ def _ytfetch_subs(
         proc = subprocess.run(
             ["ytfetch", "subs", video_id, "--langs", ",".join(langs),
              "--prefer", prefer, "--format", "json3"],
-            capture_output=True, text=True, timeout=120, env=_ytfetch_env(),
+            capture_output=True, text=True, timeout=120,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -191,14 +191,6 @@ def _ytfetch_enabled() -> bool:
     return os.environ.get("USE_YTFETCH", "1").strip().lower() not in _YTFETCH_OFF
 
 
-def _ytfetch_env() -> dict:
-    """Env for the ytfetch subprocess: default to the production 'native' backend
-    (auth pool + size-aware cache + player_client ladder) unless overridden."""
-    env = dict(os.environ)
-    env.setdefault("YTFETCH_BACKEND", "native")
-    return env
-
-
 def _ytfetch_meta(video_id: str) -> dict | None:
     """Fetch title/channel/duration via the shared ytfetch CLI (yt-video-engine).
 
@@ -209,7 +201,7 @@ def _ytfetch_meta(video_id: str) -> dict | None:
     try:
         proc = subprocess.run(
             ["ytfetch", "meta", video_id, "--fields", "title,channel,duration"],
-            capture_output=True, text=True, timeout=60, env=_ytfetch_env(),
+            capture_output=True, text=True, timeout=60,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None

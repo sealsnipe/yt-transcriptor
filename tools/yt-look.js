@@ -88,8 +88,7 @@ function ytfetchVideo(id) {
   let r;
   try {
     r = spawnSync(YTFETCH, ['fetch', id, '--media', 'video+audio', '--max-height', '1080'],
-      { encoding: 'utf8', timeout: 15 * 60 * 1000,
-        env: { ...process.env, YTFETCH_BACKEND: process.env.YTFETCH_BACKEND || 'native' } });
+      { encoding: 'utf8', timeout: 15 * 60 * 1000 });
   } catch { return null; }
   if (r.status !== 0) return null; // auth/ratelimit/format/unknown -> fall back
   try {
