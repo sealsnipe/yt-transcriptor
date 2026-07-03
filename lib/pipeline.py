@@ -7,6 +7,7 @@ from lib.cleaner import clean_plain_text, cleaned_timestamped_text
 from lib.fetcher import (
     VideoMeta,
     extract_video_id,
+    fetch_captions,
     fetch_subtitle_segments,
     fetch_transcript,
     fetch_video_meta,
@@ -64,7 +65,12 @@ def process_video(
 ) -> ProcessResult:
     video_id = extract_video_id(url_or_id)
     meta = fetch_video_meta(video_id)
-    segments, transcript_language = fetch_transcript(video_id, languages)
+    # Primary: ytfetch captions through the shared auth pool (cookies/po_token/
+    # player_client) — the bare, unauthenticated youtube_transcript_api trips
+    # YouTube's bot wall first, so it is now only the fallback.
+    segments, transcript_language = fetch_captions(video_id, languages)
+    if not segments:
+        segments, transcript_language = fetch_transcript(video_id, languages)
 
     # Some videos come back as one giant segment — useless for pointing a
     # video-QA model at a time range. Re-fetch per-cue timestamps via subtitles.

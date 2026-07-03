@@ -150,6 +150,61 @@ def _parse_json3(data: dict) -> list[TranscriptSegment]:
     return segments
 
 
+def _ytfetch_subs_fetch(
+    video_id: str, langs: list[str], prefer: str | None
+) -> tuple[int, list[TranscriptSegment] | None, str | None]:
+    """Run `ytfetch subs --format json3` and parse the json3 file it points to.
+
+    Returns (returncode, segments, lang). segments is None on any transport or
+    parse failure (returncode is forced to 1 in that case); lang is the track's
+    actual language from ytfetch's {path,lang,auto} payload. ytfetch returns the
+    exact same json3 yt-dlp produces and guarantees the track is the original
+    language (never a machine translation; a miss is exit 4 = notfound).
+
+    `prefer` ASSERTS the video's original language (a mismatch -> notfound), so
+    pass it only when the original is already known. Pass None to let ytfetch
+    pick the original track itself — the primary path doesn't know it up front.
+    """
+    cmd = ["ytfetch", "subs", video_id, "--langs", ",".join(langs), "--format", "json3"]
+    if prefer:
+        cmd += ["--prefer", prefer]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return 1, None, None
+    if proc.returncode != 0:
+        return proc.returncode, None, None
+    try:
+        payload = json.loads(proc.stdout)
+        data = json.loads(Path(payload["path"]).read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, KeyError):
+        return 1, None, None
+    return 0, _parse_json3(data), payload.get("lang")
+
+
+def fetch_captions(
+    video_id: str, languages: list[str] | None = None
+) -> tuple[list[TranscriptSegment], str | None]:
+    """Primary transcript source via the shared ytfetch auth pool.
+
+    Returns (segments, language_code), or ([], None) when ytfetch is disabled,
+    unavailable, or has no acceptable original-language track — the caller then
+    falls back to youtube_transcript_api. ytfetch routes json3 captions through
+    the same cookies/po_token/player_client pool as fetch (far more robust
+    against YouTube's bot wall than the bare, unauthenticated transcript API) and
+    guarantees the track is the video's original language, never a translation.
+    """
+    if not _ytfetch_enabled():
+        return [], None
+    langs = languages or ["de", "en"]
+    # No --prefer: we don't know the original language yet, so let ytfetch pick
+    # the original track (it still refuses machine translations).
+    rc, segments, lang = _ytfetch_subs_fetch(video_id, langs, None)
+    if rc != 0 or not segments:
+        return [], None
+    return segments, lang
+
+
 def _ytfetch_subs(
     video_id: str, langs: list[str], prefer_language: str | None
 ) -> list[TranscriptSegment] | None:
@@ -160,25 +215,14 @@ def _ytfetch_subs(
     one), or None to signal a transient failure so the caller falls back to the
     direct yt-dlp path. Gated behind USE_YTFETCH.
     """
-    prefer = prefer_language or (langs[0] if langs else "en")
-    try:
-        proc = subprocess.run(
-            ["ytfetch", "subs", video_id, "--langs", ",".join(langs),
-             "--prefer", prefer, "--format", "json3"],
-            capture_output=True, text=True, timeout=120,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if proc.returncode == 4:  # notfound: no acceptable original-language subtitles
+    # prefer_language is the known original here (from the transcript's language
+    # code); pass it through as-is — None simply lets ytfetch pick the original.
+    rc, segments, _ = _ytfetch_subs_fetch(video_id, langs, prefer_language)
+    if rc == 4:  # notfound: no acceptable original-language subtitles
         return []
-    if proc.returncode != 0:  # auth/ratelimit/unknown -> let the caller fall back
+    if rc != 0 or segments is None:  # auth/ratelimit/unknown -> caller falls back
         return None
-    try:
-        payload = json.loads(proc.stdout)
-        data = json.loads(Path(payload["path"]).read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError, KeyError):
-        return None
-    return _parse_json3(data)
+    return segments
 
 
 _YTFETCH_OFF = {"0", "false", "off", "no"}
