@@ -147,7 +147,9 @@ function cutClip(src, dir, start, end) {
 
 function extractFrame(src, dir, t) {
   const dest = path.join(dir, `frame_${String(t).replace(/[^\w.]/g, '_')}.png`);
-  execFileSync(FFMPEG, ['-y', '-ss', String(t), '-i', src, '-frames:v', '1', dest], { stdio: 'pipe', timeout: 60000 });
+  // -update 1: ffmpeg 7.x needs it to write a single image to a fixed filename;
+  // without it the muxer intermittently aborts with an I/O error (-5).
+  execFileSync(FFMPEG, ['-y', '-ss', String(t), '-i', src, '-frames:v', '1', '-update', '1', dest], { stdio: 'pipe', timeout: 60000 });
   if (!fs.existsSync(dest) || fs.statSync(dest).size === 0) throw new Error(`no frame at ${t} (past end of video?)`);
   return dest;
 }
